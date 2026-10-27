@@ -93,3 +93,68 @@ Under certain circumstances, this exception permits distribution of binaries
 that are (statically or dynamically) linked with this code, without requiring
 the distribution of Minimal Corresponding Source or Minimal Application Code.
 For more details, see: [LICENSE](LICENSE).
+
+## Decentralised service discovery (experimental)
+
+**Development is ongoing.** This feature is experimental and not yet ready for
+production use. Configuration and announcement formats may change during development.
+
+Service discovery is opt-in and separate from multicast peer discovery. Configure
+services with names and existing Yggdrasil IPv6 endpoints, for example:
+
+```hjson
+Discovery: {
+  Enabled: true
+  Forward: false
+  Services: [
+    {
+      Name: "wiki"
+      Address: "300:1234:5678:abcd::10"
+      Port: 80
+      Protocol: "tcp"
+    }
+    {
+      Name: "ssh"
+      Address: "200:1234:5678:abcd::1"
+      Port: 22
+      Protocol: "tcp"
+    }
+  ]
+}
+```
+
+Replace these example addresses with your reachable service addresses. Services
+behind the router need addresses from a routed Yggdrasil subnet and working IPv6
+routing/firewall configuration. Discovery advertises endpoints; it does not create
+routes, port forwards, DNS records, or application proxies. Protocol is `tcp` or
+`udp`; names are scoped to the announcing node's public key. Two publishers may
+use the same name. Existing IPv6 applications can use the discovered endpoints.
+
+`Enabled: true` accepts announcements from directly connected peers and publishes
+the configured services to those peers. An empty service list allows listening
+without publishing services. `Forward: true` additionally relays accepted foreign
+announcements to other connected peers, excluding the incoming peer and publisher.
+Forward has no effect while Enabled is false. Both settings default to false.
+Peers running versions without discovery ignore the new messages.
+
+Use `yggdrasilctl getServices` (or `yggdrasilctl -json getServices`) to list cached
+services, including publisher public keys and expiration times. Names do not
+resolve automatically. Configuration changes currently require a restart.
+
+Announcements carry the publisher's Ed25519 signature and a complete service
+snapshot. Newer snapshots replace older ones; an empty snapshot withdraws the
+publisher's services. Nodes refresh their own snapshots every two minutes; cached
+snapshots expire after ten minutes. Peer changes are checked every five seconds,
+and new peers receive eligible cached snapshots, retried during their first
+three checks. Eligible snapshots are also resent every two minutes. Duplicate and older snapshots
+are ignored, preventing repeated circulation in cyclic peer topologies. Clocks
+should be synchronised: announcements more than 30 seconds into the future or
+already expired are rejected. Offline publishers disappear when their snapshots
+expire.
+
+At most 32 services per publisher, 8 KiB per announcement and 1024 cached publishers
+are accepted. A full cache rejects new publishers until entries expire. Signatures
+authenticate the publisher, not endpoint ownership, availability or trustworthiness.
+Only advertise services you intend to expose: any peer may relay an announcement
+further, even if your own Forward setting is false. Announcements use encrypted
+Yggdrasil sessions and follow the configured GroupPassword restrictions.

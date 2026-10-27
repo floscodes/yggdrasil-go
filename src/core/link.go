@@ -697,6 +697,8 @@ func (l *links) handler(linkType linkType, options linkOptions, conn net.Conn, s
 		success()
 	}
 
+	disconnected := l.core.discovery.connected(keyArray(meta.publicKey))
+	defer disconnected()
 	err = l.core.HandleConn(meta.publicKey, conn, priority)
 	switch err {
 	case io.EOF, net.ErrClosed, nil:

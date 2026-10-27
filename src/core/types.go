@@ -12,5 +12,6 @@ const (
 	typeProtoDummy = iota
 	typeProtoNodeInfoRequest
 	typeProtoNodeInfoResponse
+	typeProtoDiscovery
 	typeProtoDebug = 255
 )

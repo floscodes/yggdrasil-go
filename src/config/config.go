@@ -40,6 +40,7 @@ import (
 // options that are necessary for an Yggdrasil node to run. You will need to
 // supply one of these structs to the Yggdrasil core when starting a node.
 type NodeConfig struct {
+	Discovery           DiscoveryConfig            `comment:"Optional decentralised service discovery. Enabled accepts and advertises services.\nForward relays accepted announcements to other connected peers. Disabled by default."`
 	PrivateKey          KeyBytes                   `json:",omitempty" comment:"Your private key. DO NOT share this with anyone!"`
 	PrivateKeyPath      string                     `json:",omitempty" comment:"The path to your private key file in PEM format."`
 	Certificate         *tls.Certificate           `json:"-"`
@@ -55,6 +56,22 @@ type NodeConfig struct {
 	LogLookups          bool                       `json:",omitempty"`
 	NodeInfoPrivacy     bool                       `comment:"By default, nodeinfo contains some defaults including the platform,\narchitecture and Yggdrasil version. These can help when surveying\nthe network and diagnosing network routing problems. Enabling\nnodeinfo privacy prevents this, so that only items specified in\n\"NodeInfo\" are sent back if specified."`
 	NodeInfo            map[string]any             `comment:"Optional nodeinfo. This must be a { \"key\": \"value\", ... } map\nor set as null. This is entirely optional but, if set, is visible\nto the whole network on request."`
+}
+
+// DiscoveryConfig controls opt-in service announcements over peer connections.
+type DiscoveryConfig struct {
+	Enabled  bool
+	Forward  bool
+	Services []DiscoveryService
+}
+
+// DiscoveryService describes an existing, reachable IPv6 service. Names are scoped
+// to the announcing public key, rather than globally unique DNS names.
+type DiscoveryService struct {
+	Name     string
+	Address  string
+	Port     uint16
+	Protocol string
 }
 
 type MulticastInterfaceConfig struct {
@@ -84,6 +101,7 @@ func GenerateConfig() *NodeConfig {
 	cfg.IfName = defaults.DefaultIfName
 	cfg.IfMTU = defaults.DefaultIfMTU
 	cfg.NodeInfoPrivacy = false
+	cfg.Discovery.Services = []DiscoveryService{}
 	if err := cfg.postprocessConfig(); err != nil {
 		panic(err)
 	}

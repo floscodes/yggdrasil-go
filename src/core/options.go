@@ -9,6 +9,8 @@ import (
 
 func (c *Core) _applyOption(opt SetupOption) (err error) {
 	switch v := opt.(type) {
+	case Discovery:
+		c.config.discovery = v
 	case Peer:
 		u, err := url.Parse(v.URI)
 		if err != nil {

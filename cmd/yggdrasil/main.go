@@ -199,6 +199,7 @@ func main() {
 			Mask: net.CIDRMask(7, 128),
 		}
 		options := []core.SetupOption{
+			core.Discovery(cfg.Discovery),
 			core.NodeInfo(cfg.NodeInfo),
 			core.NodeInfoPrivacy(cfg.NodeInfoPrivacy),
 			core.PeerFilter(func(ip net.IP) bool {

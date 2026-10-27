@@ -60,6 +60,7 @@ func (m *Yggdrasil) StartJSON(configjson []byte) error {
 			Mask: net.CIDRMask(7, 128),
 		}
 		options := []core.SetupOption{
+			core.Discovery(m.config.Discovery),
 			core.NodeInfo(m.config.NodeInfo),
 			core.NodeInfoPrivacy(m.config.NodeInfoPrivacy),
 			core.PeerFilter(func(ip net.IP) bool {

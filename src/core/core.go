@@ -27,14 +27,15 @@ type Core struct {
 	// guarantee that it will be covered by the mutex
 	phony.Inbox
 	*iwe.PacketConn
-	ctx    context.Context
-	cancel context.CancelFunc
-	secret ed25519.PrivateKey
-	public ed25519.PublicKey
-	links  links
-	proto  protoHandler
-	log    Logger
-	config struct {
+	ctx       context.Context
+	cancel    context.CancelFunc
+	secret    ed25519.PrivateKey
+	public    ed25519.PublicKey
+	links     links
+	proto     protoHandler
+	discovery serviceDiscovery
+	log       Logger
+	config    struct {
 		tls *tls.Config // immutable after startup
 		//_peers             map[Peer]*linkInfo         // configurable after startup
 		_listeners         map[ListenAddress]struct{} // configurable after startup
@@ -43,6 +44,7 @@ type Core struct {
 		nodeinfoPrivacy    NodeInfoPrivacy            // immutable after startup
 		_allowedPublicKeys map[[32]byte]struct{}      // configurable after startup
 		groupPassword      string                     // immutable after startup
+		discovery          Discovery
 	}
 	pathNotify func(ed25519.PublicKey)
 }
@@ -88,6 +90,9 @@ func New(cert *tls.Certificate, logger Logger, opts ...SetupOption) (*Core, erro
 		return nil, fmt.Errorf("private key is incorrect length")
 	}
 	c.public = c.secret.Public().(ed25519.PublicKey)
+	if err := c.discovery.init(c); err != nil {
+		return nil, fmt.Errorf("invalid discovery configuration: %w", err)
+	}
 
 	if c.config.tls, err = c.generateTLSConfig(cert); err != nil {
 		return nil, fmt.Errorf("error generating TLS config: %w", err)
@@ -131,6 +136,9 @@ func New(cert *tls.Certificate, logger Logger, opts ...SetupOption) (*Core, erro
 		if _, err = c.links.listen(u, "", false); err != nil {
 			c.log.Errorf("Failed to start listener %q: %s\n", listenaddr, err)
 		}
+	}
+	if c.config.discovery.Enabled {
+		go c.discovery.run()
 	}
 	return c, nil
 }
