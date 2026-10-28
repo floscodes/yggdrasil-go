@@ -40,7 +40,7 @@ import (
 // options that are necessary for an Yggdrasil node to run. You will need to
 // supply one of these structs to the Yggdrasil core when starting a node.
 type NodeConfig struct {
-	Discovery           DiscoveryConfig            `comment:"Optional decentralised service discovery. Enabled accepts and advertises services.\nForward relays accepted announcements to other connected peers. Disabled by default."`
+	Discovery           DiscoveryConfig            `comment:"Decentralised service discovery. Enabled accepts and advertises services.\nForward relays accepted announcements to other connected peers. Both default to true.\nNo own announcements are sent unless Services contains at least one service."`
 	PrivateKey          KeyBytes                   `json:",omitempty" comment:"Your private key. DO NOT share this with anyone!"`
 	PrivateKeyPath      string                     `json:",omitempty" comment:"The path to your private key file in PEM format."`
 	Certificate         *tls.Certificate           `json:"-"`
@@ -114,6 +114,8 @@ func GenerateConfig() *NodeConfig {
 	cfg.IfName = defaults.DefaultIfName
 	cfg.IfMTU = defaults.DefaultIfMTU
 	cfg.NodeInfoPrivacy = false
+	cfg.Discovery.Enabled = true
+	cfg.Discovery.Forward = true
 	cfg.Discovery.Services = []DiscoveryService{}
 	cfg.Discovery.RefreshInterval = DefaultDiscoveryRefreshInterval
 	if err := cfg.postprocessConfig(); err != nil {

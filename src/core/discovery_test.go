@@ -300,7 +300,7 @@ func TestDiscoveryConfiguredRefresh(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		c := &Core{public: public, secret: secret, ctx: ctx}
-		c.config.discovery = Discovery{Enabled: true, RefreshInterval: "5m"}
+		c.config.discovery = Discovery{Enabled: true, RefreshInterval: "5m", Services: []config.DiscoveryService{{Name: "wiki", Address: discoveryTestAddress(public), Port: 80, Protocol: config.DiscoveryProtocolTCP}}}
 		if err := c.discovery.init(c); err != nil {
 			t.Fatal(err)
 		}
@@ -379,7 +379,7 @@ func TestDiscoveryRenewal(t *testing.T) {
 // would be hidden by the receiver's normal deduplication.
 func TestDiscoveryForwardOnce(t *testing.T) {
 	a := discoveryTestNode(t, true, false)
-	b := discoveryTestNode(t, false, false)
+	b := discoveryTestNode(t, false, false, config.DiscoveryService{Name: "relay", Port: 80, Protocol: config.DiscoveryProtocolTCP})
 	// Accelerate the periodic sender for this test only. User configuration still
 	// enforces the five-minute minimum. No links exist while setting up the core.
 	b.config.discovery.Enabled = true
@@ -398,7 +398,7 @@ func TestDiscoveryForwardOnce(t *testing.T) {
 		if err := cfg.GenerateSelfSignedCertificate(); err != nil {
 			t.Fatal(err)
 		}
-		c, err := New(cfg.Certificate, nil)
+		c, err := New(cfg.Certificate, nil, Discovery{Enabled: false})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -558,5 +558,46 @@ func TestDiscoveryRejectForeignEndpoints(t *testing.T) {
 	receiver.discovery.handle(from, record.wire)
 	if len(receiver.GetServices().Services) != 1 {
 		t.Fatal("rejected valid routed endpoint from a relay")
+	}
+}
+
+func TestDiscoveryEmptyServicesSilent(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		public, secret, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		c := &Core{public: public, secret: secret, ctx: ctx}
+		c.config.discovery = Discovery{Enabled: true, Forward: true}
+		if err := c.discovery.init(c); err != nil {
+			t.Fatal(err)
+		}
+		// A connected peer and no PacketConn make any attempted announcement fail.
+		// Advance past multiple refresh intervals and the full cache lifetime.
+		disconnect := c.discovery.connected(keyArray{1})
+		defer disconnect()
+		go c.discovery.run()
+		synctest.Wait()
+		time.Sleep(61 * time.Minute)
+		synctest.Wait()
+		c.discovery.mu.Lock()
+		defer c.discovery.mu.Unlock()
+		if len(c.discovery.records) != 0 {
+			t.Fatal("created an own announcement without services")
+		}
+	})
+}
+
+func TestDiscoveryCoreDefaults(t *testing.T) {
+	cfg := config.GenerateConfig()
+	c, err := New(cfg.Certificate, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Stop()
+	if !c.config.discovery.Enabled || !c.config.discovery.Forward || len(c.config.discovery.Services) != 0 {
+		t.Fatal("unexpected discovery defaults")
 	}
 }

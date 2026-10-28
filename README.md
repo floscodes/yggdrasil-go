@@ -99,13 +99,14 @@ For more details, see: [LICENSE](LICENSE).
 **Development is ongoing.** This feature is experimental and not yet ready for
 production use. Configuration and announcement formats may change during development.
 
-Service discovery is opt-in and separate from multicast peer discovery. Configure
+Service discovery and forwarding are enabled by default and separate from
+multicast peer discovery. No services are published by default. Configure
 services with names and existing Yggdrasil IPv6 endpoints, for example:
 
 ```hjson
 Discovery: {
   Enabled: true
-  Forward: false
+  Forward: true
   RefreshInterval: "15m"
   Services: [
     {
@@ -146,9 +147,10 @@ use the same name. Existing IPv6 applications can use the discovered endpoints.
 
 `Enabled: true` accepts announcements from directly connected peers and publishes
 the configured services to those peers. An empty service list allows listening
-without publishing services. `Forward: true` additionally relays accepted foreign
-announcements to other connected peers, excluding the incoming peer and publisher.
-Forward has no effect while Enabled is false. Both settings default to false.
+and forwarding without publishing any announcements of its own. `Forward: true`
+additionally relays accepted foreign announcements to other connected peers,
+excluding the incoming peer and publisher. Forward has no effect while Enabled
+is false. Both settings default to true; the default Services list is empty.
 Peers running versions without discovery ignore the new messages.
 
 Use `yggdrasilctl getServices` (or `yggdrasilctl -json getServices`) to list cached
@@ -166,11 +168,13 @@ Announcement rules:
   invalid endpoint are rejected in full and are not cached or forwarded.
 - Each announcement contains the publisher's public key, a signed timestamp and
   its complete service list, authenticated with the publisher's Ed25519 signature.
-- The node creates and sends its own announcements at `RefreshInterval`: by
+- The node creates and sends its own announcements **only when at least one
+  service is configured**, at `RefreshInterval`: by
   default every **15 minutes**, configurable from **5 to 60 minutes**. Omitting
   the setting or using an empty string selects the default.
-- Peer connections are checked at least every five seconds. New peers receive
-  the node's own announcement, retried during their first three checks. These
+- Peer connections are checked at least every five seconds. If the node has
+  configured services, new peers receive its own announcement, retried during
+  their first three checks. These
   initial sends are additional to the regular refresh interval.
 - Each accepted foreign announcement is forwarded **once to each eligible
   connected peer**, only if `Forward: true`. The incoming peer and the original
@@ -185,7 +189,9 @@ Announcement rules:
 - When a newer announcement contains an unchanged service list, the receiver
   preserves the cached service list and updates its timestamp and expiration.
   A changed list replaces the previous list; an empty list withdraws all services
-  belonging to that publisher.
+  belonging to that publisher. The node itself never publishes an empty list;
+  removing its last configured service stops its own announcements, and previous
+  advertisements expire naturally after 60 minutes.
 - Announcements expire **60 minutes after the publisher's signed timestamp**.
   Receiving or forwarding an announcement does not reset this lifetime. Expired
   announcements are rejected; expired cached entries are removed. A new, valid

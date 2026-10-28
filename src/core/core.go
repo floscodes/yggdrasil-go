@@ -66,6 +66,7 @@ func New(cert *tls.Certificate, logger Logger, opts ...SetupOption) (*Core, erro
 	}
 
 	var err error
+	c.config.discovery = Discovery{Enabled: true, Forward: true}
 	c.config._listeners = map[ListenAddress]struct{}{}
 	c.config._allowedPublicKeys = map[[32]byte]struct{}{}
 	for _, opt := range opts {

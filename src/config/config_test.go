@@ -82,8 +82,8 @@ func TestDiscoveryConfig(t *testing.T) {
 	if cfg.Discovery.RefreshInterval != DefaultDiscoveryRefreshInterval {
 		t.Fatal("unexpected default refresh interval")
 	}
-	if cfg.Discovery.Enabled || cfg.Discovery.Forward {
-		t.Fatal("discovery must default to disabled")
+	if !cfg.Discovery.Enabled || !cfg.Discovery.Forward || len(cfg.Discovery.Services) != 0 {
+		t.Fatal("discovery and forwarding must default to enabled without published services")
 	}
 	if err := cfg.UnmarshalHJSON([]byte(`{Discovery: {Enabled: true, Forward: true, RefreshInterval: "30m", Services: [{Name: "wiki", Address: "300::1", Port: 80, Protocol: "tcp"}]}}`)); err != nil {
 		t.Fatal(err)
@@ -91,5 +91,28 @@ func TestDiscoveryConfig(t *testing.T) {
 	d := cfg.Discovery
 	if !d.Enabled || !d.Forward || len(d.Services) != 1 || d.Services[0].Name != "wiki" || d.Services[0].Port != 80 || d.Services[0].Protocol != DiscoveryProtocolTCP || d.RefreshInterval != "30m" {
 		t.Fatalf("unexpected discovery config: %+v", d)
+	}
+}
+
+func TestDiscoveryDefaultOverrides(t *testing.T) {
+	for _, tc := range []struct {
+		body             string
+		enabled, forward bool
+	}{
+		{`{}`, true, true},
+		{`{Discovery: {Services: []}}`, true, true},
+		{`{Discovery: {Enabled: false}}`, false, true},
+		{`{Discovery: {Forward: false}}`, true, false},
+		{`{Discovery: {Enabled: false, Forward: false}}`, false, false},
+	} {
+		t.Run(tc.body, func(t *testing.T) {
+			var cfg NodeConfig
+			if _, err := cfg.ReadFrom(bytes.NewBufferString(tc.body)); err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Discovery.Enabled != tc.enabled || cfg.Discovery.Forward != tc.forward || len(cfg.Discovery.Services) != 0 {
+				t.Fatalf("unexpected discovery defaults/override: %+v", cfg.Discovery)
+			}
+		})
 	}
 }

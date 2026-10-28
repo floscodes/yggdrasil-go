@@ -118,7 +118,9 @@ func (d *serviceDiscovery) init(c *Core) error {
 	if err := validateDiscoveryServices(c.config.discovery.Services, c.public); err != nil {
 		return err
 	}
-	_, err = d.announce(time.Now())
+	if len(c.config.discovery.Services) != 0 {
+		_, err = d.announce(time.Now())
+	}
 	return err
 }
 
@@ -186,7 +188,8 @@ func (d *serviceDiscovery) run() {
 	for {
 		now := time.Now()
 		peers := d.peers()
-		refresh := now.Sub(refreshed) >= d.refreshInterval
+		publish := len(d.core.config.discovery.Services) > 0
+		refresh := publish && now.Sub(refreshed) >= d.refreshInterval
 		d.mu.Lock()
 		d.cleanup(now)
 		if refresh {
@@ -199,7 +202,7 @@ func (d *serviceDiscovery) run() {
 		// Foreign snapshots are relayed only once, on acceptance in handle().
 		// Periodic refresh and connection retries advertise only our own snapshot.
 		for peer := range peers {
-			if known[peer] < 3 || refresh {
+			if publish && (known[peer] < 3 || refresh) {
 				d.send(peer, own.wire)
 			}
 		}
@@ -214,7 +217,11 @@ func (d *serviceDiscovery) run() {
 				known[peer]++
 			}
 		}
-		timer.Reset(min(5*time.Second, time.Until(refreshed.Add(d.refreshInterval))))
+		delay := 5 * time.Second
+		if publish {
+			delay = min(delay, time.Until(refreshed.Add(d.refreshInterval)))
+		}
+		timer.Reset(delay)
 		select {
 		case <-d.core.ctx.Done():
 			return
