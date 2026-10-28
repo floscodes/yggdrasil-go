@@ -79,14 +79,17 @@ func TestConfig_Keys(t *testing.T) {
 
 func TestDiscoveryConfig(t *testing.T) {
 	cfg := GenerateConfig()
+	if cfg.Discovery.RefreshInterval != DefaultDiscoveryRefreshInterval {
+		t.Fatal("unexpected default refresh interval")
+	}
 	if cfg.Discovery.Enabled || cfg.Discovery.Forward {
 		t.Fatal("discovery must default to disabled")
 	}
-	if err := cfg.UnmarshalHJSON([]byte(`{Discovery: {Enabled: true, Forward: true, Services: [{Name: "wiki", Address: "300::1", Port: 80, Protocol: "tcp"}]}}`)); err != nil {
+	if err := cfg.UnmarshalHJSON([]byte(`{Discovery: {Enabled: true, Forward: true, RefreshInterval: "30m", Services: [{Name: "wiki", Address: "300::1", Port: 80, Protocol: "tcp"}]}}`)); err != nil {
 		t.Fatal(err)
 	}
 	d := cfg.Discovery
-	if !d.Enabled || !d.Forward || len(d.Services) != 1 || d.Services[0].Name != "wiki" || d.Services[0].Port != 80 {
+	if !d.Enabled || !d.Forward || len(d.Services) != 1 || d.Services[0].Name != "wiki" || d.Services[0].Port != 80 || d.Services[0].Protocol != DiscoveryProtocolTCP || d.RefreshInterval != "30m" {
 		t.Fatalf("unexpected discovery config: %+v", d)
 	}
 }

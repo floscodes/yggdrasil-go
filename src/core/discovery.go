@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	iwt "github.com/Arceliar/ironwood/types"
+	"github.com/yggdrasil-network/yggdrasil-go/src/address"
 	"github.com/yggdrasil-network/yggdrasil-go/src/config"
 )
 
@@ -23,11 +25,12 @@ type Discovery config.DiscoveryConfig
 func (Discovery) isSetupOption() {}
 
 const (
-	discoveryMaxPacket  = 8192
-	discoveryMaxOrigins = 1024
-	discoveryLifetime   = 10 * time.Minute
-	discoveryRefresh    = 2 * time.Minute
-	discoveryDomain     = "yggdrasil-service-discovery-v1\x00"
+	discoveryMaxPacket = 8192
+	// Bound the number of cached service entries per publisher, independently of bytes.
+	discoveryMaxServices = 32
+	discoveryMaxOrigins  = 1024
+	discoveryLifetime    = 60 * time.Minute
+	discoveryDomain      = "yggdrasil-service-discovery-v1\x00"
 )
 
 type discoveryPayload struct {
@@ -45,14 +48,14 @@ type discoveryAnnouncement struct {
 type discoveryRecord struct {
 	payload discoveryPayload
 	wire    []byte
-	from    keyArray
 }
 
 type serviceDiscovery struct {
-	core        *Core
-	mu          sync.Mutex
-	records     map[keyArray]discoveryRecord
-	connections map[keyArray]int
+	core            *Core
+	mu              sync.Mutex
+	records         map[keyArray]discoveryRecord
+	connections     map[keyArray]int
+	refreshInterval time.Duration
 }
 
 // DiscoveredService is a signed advertisement, not a service availability check.
@@ -66,9 +69,16 @@ type GetServicesResponse struct {
 	Services []DiscoveredService
 }
 
-func validateDiscoveryServices(services []config.DiscoveryService) error {
-	if len(services) > 32 {
-		return fmt.Errorf("at most 32 services are allowed")
+func validateDiscoveryServices(services []config.DiscoveryService, public ed25519.PublicKey) error {
+	if len(public) != ed25519.PublicKeySize {
+		return fmt.Errorf("invalid publisher public key")
+	}
+	own := netip.AddrFrom16([16]byte(*address.AddrForKey(public)))
+	var subnetBytes [16]byte
+	copy(subnetBytes[:], address.SubnetForKey(public)[:])
+	subnet := netip.PrefixFrom(netip.AddrFrom16(subnetBytes), 64)
+	if len(services) > discoveryMaxServices {
+		return fmt.Errorf("at most %d services are allowed", discoveryMaxServices)
 	}
 	names := make(map[string]bool)
 	for _, s := range services {
@@ -80,11 +90,11 @@ func validateDiscoveryServices(services []config.DiscoveryService) error {
 		}
 		names[s.Name] = true
 		ip, err := netip.ParseAddr(s.Address)
-		if err != nil || !ip.Is6() || ip.Zone() != "" || !netip.MustParsePrefix("200::/7").Contains(ip) {
-			return fmt.Errorf("service %q requires a Yggdrasil IPv6 address", s.Name)
+		if err != nil || !ip.Is6() || ip.Zone() != "" || (ip != own && !subnet.Contains(ip)) {
+			return fmt.Errorf("service %q address %q must be the publisher address %s or belong to its routed subnet %s", s.Name, s.Address, own, subnet)
 		}
-		if s.Port == 0 || (s.Protocol != "tcp" && s.Protocol != "udp") {
-			return fmt.Errorf("service %q requires a port and protocol tcp or udp", s.Name)
+		if s.Port == 0 || (s.Protocol != config.DiscoveryProtocolTCP && s.Protocol != config.DiscoveryProtocolUDP && s.Protocol != config.DiscoveryProtocolTCPUDP) {
+			return fmt.Errorf("service %q requires a port and protocol tcp, udp or tcp+udp", s.Name)
 		}
 	}
 	return nil
@@ -92,14 +102,23 @@ func validateDiscoveryServices(services []config.DiscoveryService) error {
 
 func (d *serviceDiscovery) init(c *Core) error {
 	d.core = c
+	interval := c.config.discovery.RefreshInterval
+	if interval == "" {
+		interval = config.DefaultDiscoveryRefreshInterval
+	}
+	parsed, err := time.ParseDuration(interval)
+	if err != nil || parsed < 5*time.Minute || parsed > 60*time.Minute {
+		return fmt.Errorf("RefreshInterval must be a duration between 5m and 60m, got %q", interval)
+	}
+	d.refreshInterval = parsed
 	d.records = make(map[keyArray]discoveryRecord)
 	d.connections = make(map[keyArray]int)
 	// Copy the slice so callers cannot modify the running configuration.
 	c.config.discovery.Services = append([]config.DiscoveryService(nil), c.config.discovery.Services...)
-	if err := validateDiscoveryServices(c.config.discovery.Services); err != nil {
+	if err := validateDiscoveryServices(c.config.discovery.Services, c.public); err != nil {
 		return err
 	}
-	_, err := d.announce(time.Now())
+	_, err = d.announce(time.Now())
 	return err
 }
 
@@ -159,15 +178,15 @@ func (d *serviceDiscovery) cleanup(now time.Time) {
 }
 
 func (d *serviceDiscovery) run() {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
 	known := make(map[keyArray]int)
 	var refreshed time.Time
 	ownKey := keyArray(d.core.public)
 	for {
 		now := time.Now()
 		peers := d.peers()
-		refresh := now.Sub(refreshed) >= discoveryRefresh
+		refresh := now.Sub(refreshed) >= d.refreshInterval
 		d.mu.Lock()
 		d.cleanup(now)
 		if refresh {
@@ -175,22 +194,16 @@ func (d *serviceDiscovery) run() {
 			d.records[ownKey] = r
 			refreshed = now
 		}
-		records := make(map[keyArray]discoveryRecord, len(d.records))
-		for k, r := range d.records {
-			records[k] = r
-		}
+		own := d.records[ownKey]
 		d.mu.Unlock()
+		// Foreign snapshots are relayed only once, on acceptance in handle().
+		// Periodic refresh and connection retries advertise only our own snapshot.
 		for peer := range peers {
-			attempts := known[peer]
-			for origin, r := range records {
-				if origin == peer || (origin != ownKey && (!d.core.config.discovery.Forward || r.from == peer)) {
-					continue
-				}
-				if attempts < 3 || refresh {
-					d.send(peer, r.wire)
-				}
+			if known[peer] < 3 || refresh {
+				d.send(peer, own.wire)
 			}
 		}
+
 		for peer := range known {
 			if _, ok := peers[peer]; !ok {
 				delete(known, peer)
@@ -201,10 +214,11 @@ func (d *serviceDiscovery) run() {
 				known[peer]++
 			}
 		}
+		timer.Reset(min(5*time.Second, time.Until(refreshed.Add(d.refreshInterval))))
 		select {
 		case <-d.core.ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
 	}
 }
@@ -226,7 +240,7 @@ func (d *serviceDiscovery) handle(from keyArray, wire []byte) {
 		return
 	}
 	origin := keyArray(p.Key)
-	if origin == keyArray(d.core.public) || validateDiscoveryServices(p.Services) != nil {
+	if origin == keyArray(d.core.public) || validateDiscoveryServices(p.Services, p.Key) != nil {
 		return
 	}
 	if !ed25519.Verify(p.Key, append([]byte(discoveryDomain), a.Payload...), a.Signature) {
@@ -239,7 +253,12 @@ func (d *serviceDiscovery) handle(from keyArray, wire []byte) {
 		d.mu.Unlock()
 		return
 	}
-	d.records[origin] = discoveryRecord{payload: p, wire: append([]byte(nil), wire...), from: from}
+	// A periodic renewal preserves the service list; only signed metadata
+	// changes. A changed snapshot still replaces the services.
+	if exists && slices.Equal(old.payload.Services, p.Services) {
+		p.Services = old.payload.Services
+	}
+	d.records[origin] = discoveryRecord{payload: p, wire: append([]byte(nil), wire...)}
 	d.mu.Unlock()
 	if d.core.config.discovery.Forward {
 		for peer := range d.peers() {

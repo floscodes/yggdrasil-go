@@ -60,10 +60,23 @@ type NodeConfig struct {
 
 // DiscoveryConfig controls opt-in service announcements over peer connections.
 type DiscoveryConfig struct {
-	Enabled  bool
-	Forward  bool
-	Services []DiscoveryService
+	Enabled         bool
+	Forward         bool
+	RefreshInterval string `comment:"Interval between signed service snapshots, e.g. 5m or 15m.\nDefault: 15m. Allowed range: 5m to 60m (snapshots expire after 60m)."`
+	Services        []DiscoveryService
 }
+
+const DefaultDiscoveryRefreshInterval = "15m"
+
+// DiscoveryProtocol identifies the transport used by a service. The string
+// representation keeps configuration and announcements readable.
+type DiscoveryProtocol string
+
+const (
+	DiscoveryProtocolTCP    DiscoveryProtocol = "tcp"
+	DiscoveryProtocolUDP    DiscoveryProtocol = "udp"
+	DiscoveryProtocolTCPUDP DiscoveryProtocol = "tcp+udp"
+)
 
 // DiscoveryService describes an existing, reachable IPv6 service. Names are scoped
 // to the announcing public key, rather than globally unique DNS names.
@@ -71,7 +84,7 @@ type DiscoveryService struct {
 	Name     string
 	Address  string
 	Port     uint16
-	Protocol string
+	Protocol DiscoveryProtocol
 }
 
 type MulticastInterfaceConfig struct {
@@ -102,6 +115,7 @@ func GenerateConfig() *NodeConfig {
 	cfg.IfMTU = defaults.DefaultIfMTU
 	cfg.NodeInfoPrivacy = false
 	cfg.Discovery.Services = []DiscoveryService{}
+	cfg.Discovery.RefreshInterval = DefaultDiscoveryRefreshInterval
 	if err := cfg.postprocessConfig(); err != nil {
 		panic(err)
 	}

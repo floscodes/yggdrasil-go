@@ -106,6 +106,7 @@ services with names and existing Yggdrasil IPv6 endpoints, for example:
 Discovery: {
   Enabled: true
   Forward: false
+  RefreshInterval: "15m"
   Services: [
     {
       Name: "wiki"
@@ -114,20 +115,33 @@ Discovery: {
       Protocol: "tcp"
     }
     {
-      Name: "ssh"
+      Name: "dns"
       Address: "200:1234:5678:abcd::1"
-      Port: 22
-      Protocol: "tcp"
+      Port: 53
+      Protocol: "tcp+udp"
     }
   ]
 }
 ```
 
-Replace these example addresses with your reachable service addresses. Services
-behind the router need addresses from a routed Yggdrasil subnet and working IPv6
-routing/firewall configuration. Discovery advertises endpoints; it does not create
-routes, port forwards, DNS records, or application proxies. Protocol is `tcp` or
-`udp`; names are scoped to the announcing node's public key. Two publishers may
+The addresses above are placeholders. Replace them with addresses derived from
+this node's actual key; use `yggdrasilctl getSelf` to find its address and routed
+subnet. Only these endpoints can be advertised:
+
+- The exact Yggdrasil IPv6 address derived from the publishing node's public key.
+- Any IPv6 address within the `/64` subnet derived from that same public key, for
+  devices behind the node. Routing and firewall configuration must already allow
+  access to those devices.
+
+An arbitrary Yggdrasil address is not sufficient. Addresses belonging to another
+node/key are rejected, even if the device is on the same physical LAN. A device
+with its own Yggdrasil identity must announce under that identity, or use an
+address from this router's derived subnet when advertised by this router.
+Invalid local service addresses prevent startup and report the permitted node
+address and subnet. Discovery advertises endpoints; it does not create
+routes, port forwards, DNS records, or application proxies. Protocol is `tcp`,
+`udp` or `tcp+udp` (both transports on the same port); names are scoped to the
+announcing node's public key. Two publishers may
 use the same name. Existing IPv6 applications can use the discovered endpoints.
 
 `Enabled: true` accepts announcements from directly connected peers and publishes
@@ -141,20 +155,52 @@ Use `yggdrasilctl getServices` (or `yggdrasilctl -json getServices`) to list cac
 services, including publisher public keys and expiration times. Names do not
 resolve automatically. Configuration changes currently require a restart.
 
-Announcements carry the publisher's Ed25519 signature and a complete service
-snapshot. Newer snapshots replace older ones; an empty snapshot withdraws the
-publisher's services. Nodes refresh their own snapshots every two minutes; cached
-snapshots expire after ten minutes. Peer changes are checked every five seconds,
-and new peers receive eligible cached snapshots, retried during their first
-three checks. Eligible snapshots are also resent every two minutes. Duplicate and older snapshots
-are ignored, preventing repeated circulation in cyclic peer topologies. Clocks
-should be synchronised: announcements more than 30 seconds into the future or
-already expired are rejected. Offline publishers disappear when their snapshots
-expire.
+Announcement rules:
+
+- Discovery must be enabled to publish or accept announcements. Incoming
+  announcements are accepted only from directly connected peers.
+- Every service address must equal the publisher's key-derived node address or
+  fall within its key-derived `/64` subnet. This is checked both at local startup
+  and when receiving announcements. For relayed announcements, the original
+  publisher's key is checked, not the immediate peer's key. Announcements with an
+  invalid endpoint are rejected in full and are not cached or forwarded.
+- Each announcement contains the publisher's public key, a signed timestamp and
+  its complete service list, authenticated with the publisher's Ed25519 signature.
+- The node creates and sends its own announcements at `RefreshInterval`: by
+  default every **15 minutes**, configurable from **5 to 60 minutes**. Omitting
+  the setting or using an empty string selects the default.
+- Peer connections are checked at least every five seconds. New peers receive
+  the node's own announcement, retried during their first three checks. These
+  initial sends are additional to the regular refresh interval.
+- Each accepted foreign announcement is forwarded **once to each eligible
+  connected peer**, only if `Forward: true`. The incoming peer and the original
+  publisher are excluded. This is one send attempt per eligible peer, not a
+  delivery guarantee.
+- Foreign announcements are **not** included in the node's periodic announcements
+  and are **not** replayed from the cache to newly connected peers.
+- For each publisher, only the announcement with the newest signed timestamp is
+  retained. Duplicate or older announcements are ignored and are not forwarded.
+- An announcement with a **newer signed timestamp** is a new announcement and may
+  be forwarded once again, even if the previous announcement has not yet expired.
+- When a newer announcement contains an unchanged service list, the receiver
+  preserves the cached service list and updates its timestamp and expiration.
+  A changed list replaces the previous list; an empty list withdraws all services
+  belonging to that publisher.
+- Announcements expire **60 minutes after the publisher's signed timestamp**.
+  Receiving or forwarding an announcement does not reset this lifetime. Expired
+  announcements are rejected; expired cached entries are removed. A new, valid
+  announcement received after expiration may be accepted and forwarded once again.
+- Announcements more than 30 seconds into the future are rejected. Clocks should
+  be synchronised. At a 60-minute refresh interval, delivery delays can briefly
+  expire a service before its renewal arrives.
+
+Configuration changes require a restart.
 
 At most 32 services per publisher, 8 KiB per announcement and 1024 cached publishers
 are accepted. A full cache rejects new publishers until entries expire. Signatures
-authenticate the publisher, not endpoint ownership, availability or trustworthiness.
+authenticate the publisher; address validation binds advertised endpoints to its
+key-derived address space. This does not prove that an application is running,
+that a device is currently reachable, or that a service is trustworthy.
 Only advertise services you intend to expose: any peer may relay an announcement
 further, even if your own Forward setting is false. Announcements use encrypted
 Yggdrasil sessions and follow the configured GroupPassword restrictions.
