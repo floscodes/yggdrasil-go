@@ -65,10 +65,6 @@ type DiscoveredService struct {
 	Expires   time.Time
 }
 
-type GetServicesResponse struct {
-	Services []DiscoveredService
-}
-
 func validateDiscoveryServices(services []config.DiscoveryService, public ed25519.PublicKey) error {
 	if len(public) != ed25519.PublicKeySize {
 		return fmt.Errorf("invalid publisher public key")
@@ -277,8 +273,8 @@ func (d *serviceDiscovery) handle(from keyArray, wire []byte) {
 }
 
 // GetServices returns unexpired announcements, scoped by the publisher's key.
-func (c *Core) GetServices() GetServicesResponse {
-	result := GetServicesResponse{Services: []DiscoveredService{}}
+func (c *Core) GetServices() []DiscoveredService {
+	result := []DiscoveredService{}
 	if !c.config.discovery.Enabled {
 		return result
 	}
@@ -287,11 +283,11 @@ func (c *Core) GetServices() GetServicesResponse {
 	c.discovery.cleanup(time.Now())
 	for key, r := range c.discovery.records {
 		for _, s := range r.payload.Services {
-			result.Services = append(result.Services, DiscoveredService{s, hex.EncodeToString(key[:]), time.Unix(r.payload.Issued, 0).Add(discoveryLifetime)})
+			result = append(result, DiscoveredService{s, hex.EncodeToString(key[:]), time.Unix(r.payload.Issued, 0).Add(discoveryLifetime)})
 		}
 	}
-	sort.Slice(result.Services, func(i, j int) bool {
-		a, b := result.Services[i], result.Services[j]
+	sort.Slice(result, func(i, j int) bool {
+		a, b := result[i], result[j]
 		if a.PublicKey != b.PublicKey {
 			return a.PublicKey < b.PublicKey
 		}

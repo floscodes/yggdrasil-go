@@ -237,11 +237,6 @@ type AddHandlerFunc func(json.RawMessage) (any, error)
 // SetAdmin must be called after Init and before Start.
 // It sets the admin handler for NodeInfo and the Debug admin functions.
 func (c *Core) SetAdmin(a AddHandler) error {
-	if err := a.AddHandler("getServices", "List unexpired service discovery announcements", nil, func(json.RawMessage) (any, error) {
-		return c.GetServices(), nil
-	}); err != nil {
-		return err
-	}
 	if err := a.AddHandler(
 		"getNodeInfo", "Request nodeinfo from a remote node by its public key", []string{"key"},
 		c.proto.nodeinfo.nodeInfoAdminHandler,

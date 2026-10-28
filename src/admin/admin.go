@@ -159,6 +159,20 @@ func New(c *core.Core, log core.Logger, opts ...SetupOption) (*AdminSocket, erro
 
 func (a *AdminSocket) SetupAdminHandlers() {
 	_ = a.AddHandler(
+		"getServices", "List unexpired service discovery announcements", []string{},
+		func(in json.RawMessage) (any, error) {
+			req := &GetServicesRequest{}
+			res := &GetServicesResponse{}
+			if err := json.Unmarshal(in, &req); err != nil {
+				return nil, err
+			}
+			if err := a.getServicesHandler(req, res); err != nil {
+				return nil, err
+			}
+			return res, nil
+		},
+	)
+	_ = a.AddHandler(
 		"getSelf", "Show details about this node", []string{},
 		func(in json.RawMessage) (any, error) {
 			req := &GetSelfRequest{}

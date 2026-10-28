@@ -183,19 +183,19 @@ func TestDiscoveryRelay(t *testing.T) {
 			wire, _ := json.Marshal(forged)
 			a.discovery.send(keyArray(b.public), wire)
 			time.Sleep(100 * time.Millisecond)
-			if len(b.GetServices().Services) != 0 {
+			if len(b.GetServices()) != 0 {
 				t.Fatal("accepted forged signature")
 			}
 			a.discovery.send(keyArray(b.public), record.wire)
 			if tc.enabled {
 				discoveryWait(t, func() bool {
 					a.discovery.send(keyArray(b.public), record.wire)
-					return len(b.GetServices().Services) == 1
+					return len(b.GetServices()) == 1
 				})
 			}
 			if tc.want {
-				discoveryWait(t, func() bool { return len(c.GetServices().Services) == 1 })
-				if len(a.GetServices().Services) != 0 {
+				discoveryWait(t, func() bool { return len(c.GetServices()) == 1 })
+				if len(a.GetServices()) != 0 {
 					t.Fatal("announcement returned to incoming peer")
 				}
 				// Replay and older snapshots must not change or multiply results.
@@ -203,7 +203,7 @@ func TestDiscoveryRelay(t *testing.T) {
 				older, _ := d.announce(time.Now().Add(-time.Minute))
 				a.discovery.send(keyArray(b.public), older.wire)
 				time.Sleep(100 * time.Millisecond)
-				if got := b.GetServices(); len(got.Services) != 1 || !got.Services[0].Expires.Equal(time.Unix(record.payload.Issued, 0).Add(discoveryLifetime)) {
+				if got := b.GetServices(); len(got) != 1 || !got[0].Expires.Equal(time.Unix(record.payload.Issued, 0).Add(discoveryLifetime)) {
 					t.Fatal("replay replaced announcement")
 				}
 				// Empty snapshots withdraw all services for this publisher.
@@ -212,14 +212,14 @@ func TestDiscoveryRelay(t *testing.T) {
 				a.discovery.send(keyArray(b.public), withdrawal.wire)
 				discoveryWait(t, func() bool {
 					a.discovery.send(keyArray(b.public), withdrawal.wire)
-					return len(b.GetServices().Services) == 0 && len(c.GetServices().Services) == 0
+					return len(b.GetServices()) == 0 && len(c.GetServices()) == 0
 				})
 			} else {
 				time.Sleep(200 * time.Millisecond)
-				if len(c.GetServices().Services) != 0 {
+				if len(c.GetServices()) != 0 {
 					t.Fatal("unexpected forwarding")
 				}
-				if !tc.enabled && len(b.GetServices().Services) != 0 {
+				if !tc.enabled && len(b.GetServices()) != 0 {
 					t.Fatal("disabled discovery accepted announcement")
 				}
 			}
@@ -253,7 +253,7 @@ func TestDiscoveryAutomaticAnnouncement(t *testing.T) {
 	}
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
-		services := b.GetServices().Services
+		services := b.GetServices()
 		if len(services) == 1 && services[0].DiscoveryService == service {
 			return
 		}
@@ -349,7 +349,7 @@ func TestDiscoveryRenewal(t *testing.T) {
 		t.Fatal(err)
 	}
 	receiver.discovery.handle(from, first.wire)
-	before := receiver.GetServices().Services
+	before := receiver.GetServices()
 	if len(before) != 1 {
 		t.Fatal("initial service missing")
 	}
@@ -358,7 +358,7 @@ func TestDiscoveryRenewal(t *testing.T) {
 		t.Fatal(err)
 	}
 	receiver.discovery.handle(from, renewed.wire)
-	after := receiver.GetServices().Services
+	after := receiver.GetServices()
 	if len(after) != 1 || after[0].DiscoveryService != before[0].DiscoveryService || after[0].PublicKey != before[0].PublicKey {
 		t.Fatal("renewal changed or duplicated the service")
 	}
@@ -556,7 +556,7 @@ func TestDiscoveryRejectForeignEndpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	receiver.discovery.handle(from, record.wire)
-	if len(receiver.GetServices().Services) != 1 {
+	if len(receiver.GetServices()) != 1 {
 		t.Fatal("rejected valid routed endpoint from a relay")
 	}
 }
