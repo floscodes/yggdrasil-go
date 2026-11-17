@@ -170,16 +170,16 @@ Announcement rules:
   its complete service list, authenticated with the publisher's Ed25519 signature.
 - The node creates and sends its own announcements **only when at least one
   service is configured**, at `RefreshInterval`: by
-  default every **15 minutes**, configurable from **5 to 60 minutes**. Omitting
+  default every **15 minutes**, configurable from **5 to 30 minutes**. Omitting
   the setting or using an empty string selects the default.
 - Peer connections are checked at least every five seconds. If the node has
   configured services, new peers receive its own announcement, retried during
   their first three checks. These
   initial sends are additional to the regular refresh interval.
-- Each accepted foreign announcement is forwarded **once to each eligible
+- Each accepted foreign announcement is forwarded **at most once to each eligible
   connected peer**, only if `Forward: true`. The incoming peer and the original
   publisher are excluded. This is one send attempt per eligible peer, not a
-  delivery guarantee.
+  delivery guarantee. Exhausted outgoing budgets can drop relay attempts.
 - Foreign announcements are **not** included in the node's periodic announcements
   and are **not** replayed from the cache to newly connected peers.
 - For each publisher, only the announcement with the newest signed timestamp is
@@ -197,14 +197,79 @@ Announcement rules:
   announcements are rejected; expired cached entries are removed. A new, valid
   announcement received after expiration may be accepted and forwarded once again.
 - Announcements more than 30 seconds into the future are rejected. Clocks should
-  be synchronised. At a 60-minute refresh interval, delivery delays can briefly
-  expire a service before its renewal arrives.
+  be synchronised. The 30-minute maximum refresh interval leaves delivery
+  headroom; a lost renewal can still cause a gap at that setting. The 15-minute
+  default provides additional scheduled renewal opportunities.
 
 Configuration changes require a restart.
 
-At most 32 services per publisher, 8 KiB per announcement and 1024 cached publishers
-are accepted. A full cache rejects new publishers until entries expire. Signatures
-authenticate the publisher; address validation binds advertised endpoints to its
+Both limits apply: at most 32 services and 8192 serialized bytes per complete JSON
+envelope, including signature, escaping and whitespace. Names are at most 128 UTF-8
+bytes. Escaped names can exhaust the byte limit before reaching 32 services.
+Oversized local snapshots fail startup with an error; they are never silently
+truncated or split into independent snapshots. Both discovery framing bytes must
+also fit the encrypted session MTU; this is independent of the TUN interface MTU.
+Send errors are counted rather than retried indefinitely.
+
+The local cache holds at most 1024 publishers, including empty withdrawal records
+and one reserved slot when this node publishes services. A full cache rejects new
+publishers until entries expire, while existing publishers can renew subject to
+their budgets. Renewing publishers can occupy it indefinitely. Nodes can therefore
+retain different, incomplete subsets of the network's advertisements. Wire bodies
+alone can occupy 8 MiB; decoded data and processing add further memory use.
+
+Network discovery processing uses one verification worker and a 64-message queue
+(at most 512 KiB of queued bodies). A full queue drops incoming discovery work;
+JSON parsing, signature verification and relay sends do not run on the application
+packet reader. Per-peer and global ingress limits apply before copying and parsing,
+including malformed, forged, duplicate and older messages. Publisher budgets are
+charged only after successful verification and tracked only in bounded cache
+records. Peer budgets exist only for active authenticated links. Each outgoing
+copy, including local publication and its finite initial retries, consumes egress
+budgets. Limits can cause missed announcements; discovery remains best effort.
+
+`yggdrasilctl -json getServices` includes a `Discovery` status object with cache
+capacity, publisher count, queue depth and lifetime counters: `IngressDrops`,
+`QueueDrops`, `PublisherDrops`, `EgressDrops`, `CapacityDrops`, `SendErrors`,
+`VerificationAttempts` and `DuplicateDrops`. Capacity or overload drops mean
+results may be incomplete. Drops do not generate per-packet replies or log entries.
+
+Token-bucket defaults are experimental and configurable under `Discovery.RateLimits`:
+
+| Budget | Messages/min | Bytes/min | Burst messages | Burst bytes |
+|:--|--:|--:|--:|--:|
+| `Ingress` (global) | 7680 | 62914560 | 256 | 2097152 |
+| `PeerIngress` | 3840 | 31457280 | 128 | 1048576 |
+| `Egress` (global) | 7680 | 62914560 | 256 | 2097152 |
+| `PeerEgress` | 1920 | 15728640 | 128 | 1048576 |
+| `Publisher` | 1 | 8192 | 3 | 24576 |
+
+Message count and byte budgets must both permit a packet. Egress bytes include the
+two framing bytes; other budgets count the JSON envelope. `Publisher` permits an
+initial burst of three accepted snapshots, then replenishes at one message and
+8192 bytes per minute. A rate-limited snapshot does not advance replay state.
+The publisher's five-minute configured refresh minimum is not an incoming rate
+limit. Forged messages still consume ingress and verification capacity, but cannot
+consume another publisher's authenticated budget.
+
+Each budget has `MessagesPerMinute`, `BytesPerMinute`, `BurstMessages` and
+`BurstBytes` fields. Zero or omitted fields select defaults; negative fields are
+invalid. `BurstBytes` must be at least 8194 so maximum-size announcements can pass.
+For example, to lower just the global ingress message rate:
+
+```hjson
+Discovery: {
+  RateLimits: {
+    Ingress: { MessagesPerMinute: 1920 }
+  }
+}
+```
+
+These finite defaults bound admitted work and fan-out; they are not measured CPU
+capacity guarantees. Hardware-specific throughput and fairness against Sybil
+publishers still need evaluation before production deployment.
+
+Signatures authenticate the publisher; address validation binds advertised endpoints to its
 key-derived address space. This does not prove that an application is running,
 that a device is currently reachable, or that a service is trustworthy.
 Only advertise services you intend to expose: any peer may relay an announcement

@@ -140,6 +140,7 @@ func New(cert *tls.Certificate, logger Logger, opts ...SetupOption) (*Core, erro
 	}
 	if c.config.discovery.Enabled {
 		go c.discovery.run()
+		go c.discovery.receive()
 	}
 	return c, nil
 }
@@ -196,6 +197,11 @@ func (c *Core) ReadFrom(p []byte) (n int, from net.Addr, err error) {
 		case typeSessionProto:
 			var key keyArray
 			copy(key[:], from.(iwt.Addr))
+			// Discovery admission precedes copying so oversized bodies never enter a queue.
+			if n >= 2 && bs[1] == typeProtoDiscovery {
+				c.discovery.enqueue(key, bs[2:n])
+				continue
+			}
 			data := append([]byte(nil), bs[1:n]...)
 			c.proto.handleProto(nil, key, data)
 			continue

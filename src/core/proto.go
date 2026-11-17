@@ -60,7 +60,7 @@ func (p *protoHandler) handleProto(from phony.Actor, key keyArray, bs []byte) {
 	}
 	switch bs[0] {
 	case typeProtoDiscovery:
-		p.core.discovery.handle(key, bs[1:])
+		p.core.discovery.enqueue(key, bs[1:])
 	case typeProtoDummy:
 	case typeProtoNodeInfoRequest:
 		p.nodeinfo.handleReq(p, key)

@@ -62,8 +62,26 @@ type NodeConfig struct {
 type DiscoveryConfig struct {
 	Enabled         bool
 	Forward         bool
-	RefreshInterval string `comment:"Interval between signed service snapshots, e.g. 5m or 15m.\nDefault: 15m. Allowed range: 5m to 60m (snapshots expire after 60m)."`
+	RefreshInterval string `comment:"Interval between signed service snapshots, e.g. 5m or 15m.\nDefault: 15m. Allowed range: 5m to 30m (snapshots expire after 60m)."`
 	Services        []DiscoveryService
+	RateLimits      DiscoveryRateLimits `comment:"Finite discovery token-bucket budgets. Zero fields use the documented defaults.\nRates are per minute; bursts bound instantaneous work. See README."`
+}
+
+// DiscoveryRateLimit bounds message count and serialized bytes independently.
+// Zero fields select defaults; negative values are invalid.
+type DiscoveryRateLimit struct {
+	MessagesPerMinute int
+	BytesPerMinute    int
+	BurstMessages     int
+	BurstBytes        int
+}
+
+type DiscoveryRateLimits struct {
+	Ingress     DiscoveryRateLimit
+	PeerIngress DiscoveryRateLimit
+	Egress      DiscoveryRateLimit
+	PeerEgress  DiscoveryRateLimit
+	Publisher   DiscoveryRateLimit
 }
 
 const DefaultDiscoveryRefreshInterval = "15m"

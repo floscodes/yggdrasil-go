@@ -48,6 +48,7 @@ type discoveryAnnouncement struct {
 type discoveryRecord struct {
 	payload discoveryPayload
 	wire    []byte
+	budget  discoveryBucket
 }
 
 type serviceDiscovery struct {
@@ -56,6 +57,11 @@ type serviceDiscovery struct {
 	records         map[keyArray]discoveryRecord
 	connections     map[keyArray]int
 	refreshInterval time.Duration
+	queue           chan discoveryJob
+	limits          config.DiscoveryRateLimits
+	ingress, egress discoveryBucket
+	peerBudgets     map[keyArray]*discoveryPeerBudgets
+	stats           DiscoveryStatus
 }
 
 // DiscoveredService is a signed advertisement, not a service availability check.
@@ -103,12 +109,18 @@ func (d *serviceDiscovery) init(c *Core) error {
 		interval = config.DefaultDiscoveryRefreshInterval
 	}
 	parsed, err := time.ParseDuration(interval)
-	if err != nil || parsed < 5*time.Minute || parsed > 60*time.Minute {
-		return fmt.Errorf("RefreshInterval must be a duration between 5m and 60m, got %q", interval)
+	if err != nil || parsed < 5*time.Minute || parsed > 30*time.Minute {
+		return fmt.Errorf("RefreshInterval must be a duration between 5m and 30m, got %q", interval)
 	}
 	d.refreshInterval = parsed
 	d.records = make(map[keyArray]discoveryRecord)
 	d.connections = make(map[keyArray]int)
+	d.peerBudgets = make(map[keyArray]*discoveryPeerBudgets)
+	d.queue = make(chan discoveryJob, discoveryQueueSize)
+	d.limits, err = discoveryLimits(c.config.discovery.RateLimits)
+	if err != nil {
+		return err
+	}
 	// Copy the slice so callers cannot modify the running configuration.
 	c.config.discovery.Services = append([]config.DiscoveryService(nil), c.config.discovery.Services...)
 	if err := validateDiscoveryServices(c.config.discovery.Services, c.public); err != nil {
@@ -131,7 +143,7 @@ func (d *serviceDiscovery) announce(now time.Time) (discoveryRecord, error) {
 		return discoveryRecord{}, err
 	}
 	if len(wire) > discoveryMaxPacket {
-		return discoveryRecord{}, fmt.Errorf("announcement exceeds %d bytes", discoveryMaxPacket)
+		return discoveryRecord{}, fmt.Errorf("serialized announcement is %d bytes (maximum %d); shorten names or remove services", len(wire), discoveryMaxPacket)
 	}
 	return discoveryRecord{payload: p, wire: wire}, nil
 }
@@ -150,6 +162,9 @@ func (d *serviceDiscovery) peers() map[keyArray]struct{} {
 // diagnostics, which are unnecessary for discovery and may change concurrently.
 func (d *serviceDiscovery) connected(key keyArray) func() {
 	d.mu.Lock()
+	if d.connections[key] == 0 {
+		d.peerBudgets[key] = new(discoveryPeerBudgets)
+	}
 	d.connections[key]++
 	d.mu.Unlock()
 	return func() {
@@ -158,13 +173,54 @@ func (d *serviceDiscovery) connected(key keyArray) func() {
 		d.connections[key]--
 		if d.connections[key] == 0 {
 			delete(d.connections, key)
+			delete(d.peerBudgets, key)
 		}
 	}
 }
 
 func (d *serviceDiscovery) send(to keyArray, wire []byte) {
+	d.mu.Lock()
+	peer := d.peerBudgets[to]
+	if peer == nil {
+		d.mu.Unlock()
+		return
+	}
+	now := time.Now()
+	size := len(wire) + 2
+	if !discoveryAllow(now, size, &d.egress, d.limits.Egress, &peer.egress, d.limits.PeerEgress) {
+		d.stats.EgressDrops++
+		d.mu.Unlock()
+		return
+	}
+	d.mu.Unlock()
+	if err := d.writeAnnouncement(to, wire); err != nil {
+		d.mu.Lock()
+		d.stats.SendErrors++
+		d.mu.Unlock()
+	}
+}
+
+// No retries here: publication has finite initial retries; foreign relays are best effort.
+func (d *serviceDiscovery) writeAnnouncement(to keyArray, wire []byte) error {
+	if d.core.PacketConn.IsClosed() {
+		return iwt.ErrClosed
+	}
+	if err := validateDiscoveryPacketSize(len(wire), d.core.PacketConn.MTU()); err != nil {
+		return err
+	}
 	bs := append([]byte{typeSessionProto, typeProtoDiscovery}, wire...)
-	_, _ = d.core.PacketConn.WriteTo(bs, iwt.Addr(to[:]))
+	_, err := d.core.PacketConn.WriteTo(bs, iwt.Addr(to[:]))
+	return err
+}
+
+func validateDiscoveryPacketSize(size int, mtu uint64) error {
+	if size > discoveryMaxPacket {
+		return fmt.Errorf("discovery announcement exceeds %d bytes", discoveryMaxPacket)
+	}
+	if uint64(size+2) > mtu {
+		return fmt.Errorf("discovery announcement exceeds session MTU")
+	}
+	return nil
 }
 
 func (d *serviceDiscovery) cleanup(now time.Time) {
@@ -189,13 +245,17 @@ func (d *serviceDiscovery) run() {
 		d.mu.Lock()
 		d.cleanup(now)
 		if refresh {
-			r, _ := d.announce(now) // Configuration and packet size were checked at startup.
-			d.records[ownKey] = r
+			r, err := d.announce(now)
+			if err == nil {
+				d.records[ownKey] = r
+			} else {
+				d.stats.SendErrors++
+			}
 			refreshed = now
 		}
 		own := d.records[ownKey]
 		d.mu.Unlock()
-		// Foreign snapshots are relayed only once, on acceptance in handle().
+		// Foreign snapshots are relayed only once, on acceptance in process().
 		// Periodic refresh and connection retries advertise only our own snapshot.
 		for peer := range peers {
 			if publish && (known[peer] < 3 || refresh) {
@@ -226,11 +286,12 @@ func (d *serviceDiscovery) run() {
 	}
 }
 
-func (d *serviceDiscovery) handle(from keyArray, wire []byte) {
-	if !d.core.config.discovery.Enabled || len(wire) > discoveryMaxPacket {
-		return
-	}
-	if _, ok := d.peers()[from]; !ok {
+func (d *serviceDiscovery) process(from keyArray, wire []byte) {
+	// Queued work from disconnected peers is discarded before expensive processing.
+	d.mu.Lock()
+	connected := d.connections[from] > 0
+	d.mu.Unlock()
+	if !connected {
 		return
 	}
 	var a discoveryAnnouncement
@@ -246,13 +307,35 @@ func (d *serviceDiscovery) handle(from keyArray, wire []byte) {
 	if origin == keyArray(d.core.public) || validateDiscoveryServices(p.Services, p.Key) != nil {
 		return
 	}
+	d.mu.Lock()
+	d.stats.VerificationAttempts++
+	d.mu.Unlock()
 	if !ed25519.Verify(p.Key, append([]byte(discoveryDomain), a.Payload...), a.Signature) {
 		return
 	}
 	d.mu.Lock()
 	d.cleanup(now)
 	old, exists := d.records[origin]
-	if (exists && old.payload.Issued >= p.Issued) || (!exists && len(d.records) >= discoveryMaxOrigins) {
+	if exists && old.payload.Issued >= p.Issued {
+		d.stats.DuplicateDrops++
+		d.mu.Unlock()
+		return
+	}
+	// Reserve the local publisher's slot even before its first worker iteration.
+	capacity := discoveryMaxOrigins
+	if len(d.core.config.discovery.Services) > 0 {
+		if _, ownExists := d.records[keyArray(d.core.public)]; !ownExists {
+			capacity--
+		}
+	}
+	if !exists && len(d.records) >= capacity {
+		d.stats.CapacityDrops++
+		d.mu.Unlock()
+		return
+	}
+	budget := old.budget
+	if !budget.allow(now, len(wire), d.limits.Publisher) {
+		d.stats.PublisherDrops++
 		d.mu.Unlock()
 		return
 	}
@@ -261,7 +344,7 @@ func (d *serviceDiscovery) handle(from keyArray, wire []byte) {
 	if exists && slices.Equal(old.payload.Services, p.Services) {
 		p.Services = old.payload.Services
 	}
-	d.records[origin] = discoveryRecord{payload: p, wire: append([]byte(nil), wire...)}
+	d.records[origin] = discoveryRecord{payload: p, wire: append([]byte(nil), wire...), budget: budget}
 	d.mu.Unlock()
 	if d.core.config.discovery.Forward {
 		for peer := range d.peers() {

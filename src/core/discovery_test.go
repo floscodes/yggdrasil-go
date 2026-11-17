@@ -267,7 +267,7 @@ func TestDiscoveryRefreshInterval(t *testing.T) {
 		interval string
 		want     time.Duration
 	}{
-		{"", 15 * time.Minute}, {"5m", 5 * time.Minute}, {"15m", 15 * time.Minute}, {"60m", 60 * time.Minute},
+		{"", 15 * time.Minute}, {"5m", 5 * time.Minute}, {"15m", 15 * time.Minute}, {"30m", 30 * time.Minute},
 	} {
 		t.Run(tc.interval, func(t *testing.T) {
 			c := discoveryTestNodeConfigured(t, Discovery{RefreshInterval: tc.interval})
@@ -276,7 +276,7 @@ func TestDiscoveryRefreshInterval(t *testing.T) {
 			}
 		})
 	}
-	for _, interval := range []string{"0s", "-1s", "1s", "4m59s", "60m1s", "invalid"} {
+	for _, interval := range []string{"0s", "-1s", "1s", "4m59s", "30m1s", "60m", "invalid"} {
 		t.Run(interval, func(t *testing.T) {
 			cfg := config.GenerateConfig()
 			if err := cfg.GenerateSelfSignedCertificate(); err != nil {
@@ -386,6 +386,7 @@ func TestDiscoveryForwardOnce(t *testing.T) {
 	b.config.discovery.Forward = true
 	b.discovery.refreshInterval = 50 * time.Millisecond
 	go b.discovery.run()
+	go b.discovery.receive()
 	public, secret, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
